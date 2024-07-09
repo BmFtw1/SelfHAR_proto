@@ -48,58 +48,72 @@ You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
-def create_individual_transform_dataset(X, transform_funcs, other_labels=None, multiple=1, is_transform_func_vectorized=True, verbose=1):
-    label_depth = len(transform_funcs)
-    transform_x = []
-    transform_y = []
-    other_y = []
-    if is_transform_func_vectorized:
-        for _ in range(multiple):
-            
-            transform_x.append(X)
-            ys = np.zeros((len(X), label_depth), dtype=int)
-            transform_y.append(ys)
-            if other_labels is not None:
-                other_y.append(other_labels)
+# def create_individual_transform_dataset(X, transform_funcs, other_labels=None, multiple=1, is_transform_func_vectorized=True, verbose=1):
+#     label_depth = len(transform_funcs)
+#     transform_x = []
+#     transform_y = []
+#     other_y = []
+#     if is_transform_func_vectorized:
+#         for _ in range(multiple):
+#
+#             transform_x.append(X)
+#             ys = np.zeros((len(X), label_depth), dtype=int)
+#             transform_y.append(ys)
+#             if other_labels is not None:
+#                 other_y.append(other_labels)
+#
+#             for i, transform_func in enumerate(transform_funcs):
+#                 if verbose > 0:
+#                     print(f"Using transformation {i} {transform_func}")
+#                 transform_x.append(transform_func(X))
+#                 ys = np.zeros((len(X), label_depth), dtype=int)
+#                 ys[:, i] = 1
+#                 transform_y.append(ys)
+#                 if other_labels is not None:
+#                     other_y.append(other_labels)
+#         if other_labels is not None:
+#             return np.concatenate(transform_x, axis=0), np.concatenate(transform_y, axis=0), np.concatenate(other_y, axis=0)
+#         else:
+#             return np.concatenate(transform_x, axis=0), np.concatenate(transform_y, axis=0),
+#     else:
+#         for _ in range(multiple):
+#             for i, sample in enumerate(X):
+#                 if verbose > 0 and i % 1000 == 0:
+#                     print(f"Processing sample {i}")
+#                     gc.collect()
+#                 y = np.zeros(label_depth, dtype=int)
+#                 transform_x.append(sample)
+#                 transform_y.append(y)
+#                 if other_labels is not None:
+#                     other_y.append(other_labels[i])
+#                 for j, transform_func in enumerate(transform_funcs):
+#                     y = np.zeros(label_depth, dtype=int)
+#                     # transform_x.append(sample)
+#                     # transform_y.append(y.copy())
+#
+#                     y[j] = 1
+#                     transform_x.append(transform_func(sample))
+#                     transform_y.append(y)
+#                     if other_labels is not None:
+#                         other_y.append(other_labels[i])
+#         if other_labels is not None:
+#             np.stack(transform_x), np.stack(transform_y), np.stack(other_y)
+#         else:
+#             return np.stack(transform_x), np.stack(transform_y)
 
-            for i, transform_func in enumerate(transform_funcs):
-                if verbose > 0:
-                    print(f"Using transformation {i} {transform_func}")
-                transform_x.append(transform_func(X))
-                ys = np.zeros((len(X), label_depth), dtype=int)
-                ys[:, i] = 1
-                transform_y.append(ys)
-                if other_labels is not None:
-                    other_y.append(other_labels)
-        if other_labels is not None:
-            return np.concatenate(transform_x, axis=0), np.concatenate(transform_y, axis=0), np.concatenate(other_y, axis=0)
-        else:
-            return np.concatenate(transform_x, axis=0), np.concatenate(transform_y, axis=0), 
-    else:
-        for _ in range(multiple):
-            for i, sample in enumerate(X):
-                if verbose > 0 and i % 1000 == 0:
-                    print(f"Processing sample {i}")
-                    gc.collect()
-                y = np.zeros(label_depth, dtype=int)
-                transform_x.append(sample)
-                transform_y.append(y)
-                if other_labels is not None:
-                    other_y.append(other_labels[i])
-                for j, transform_func in enumerate(transform_funcs):
-                    y = np.zeros(label_depth, dtype=int)
-                    # transform_x.append(sample)
-                    # transform_y.append(y.copy())
+def create_sensor_type_pseudo_labels(X, sensor_types):
+    """
+    Create a dataset with sensor types as pseudo labels.
 
-                    y[j] = 1
-                    transform_x.append(transform_func(sample))
-                    transform_y.append(y)
-                    if other_labels is not None:
-                        other_y.append(other_labels[i])
-        if other_labels is not None:
-            np.stack(transform_x), np.stack(transform_y), np.stack(other_y)
-        else:
-            return np.stack(transform_x), np.stack(transform_y)
+    Parameters:
+        X (np.ndarray): The input sensor data.
+        sensor_types (np.ndarray): The sensor type labels.
+
+    Returns:
+        X, sensor_type_y (np.ndarray, np.ndarray): The input data and pseudo labels.
+    """
+    sensor_type_y = sensor_types
+    return X, sensor_type_y
 
 def map_multitask_y(y, output_tasks):
     multitask_y = {}

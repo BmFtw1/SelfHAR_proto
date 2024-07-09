@@ -3,6 +3,8 @@ import gc
 import pickle
 import argparse
 import datetime
+import tarfile
+
 import requests
 import zipfile
 import copy
@@ -56,7 +58,6 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
-
 
 """
 Making use of the following datasets:
@@ -112,6 +113,20 @@ DATASET_METADATA = {
         'has_null_class': False,
         'sampling_rate': 150.0,
         'unit': 1,
+    },
+    'wisdm': {
+        'name': 'wisdm',
+        'dataset_home_page': 'https://www.cis.fordham.edu/wisdm/dataset.php',
+        'source_url': 'https://www.cis.fordham.edu/wisdm/includes/datasets/latest/WISDM_ar_latest.tar.gz',
+        'file_name': 'WISDM_ar_latest.tar',
+
+        'default_folder_path': 'WISDM_ar_v1.1',
+        'save_file_name': 'wisdm_processed.pkl',
+        'label_list': ['walking', 'jogging', 'upstairs', 'downstairs', 'sitting', 'standing'],
+        'label_list_full_name': ['Walking', 'Jogging', 'Ascending Stairs', 'Descending Stairs', 'Sitting', 'Standing'],
+        'has_null_class': False,
+        'sampling_rate': 20.0,
+        'unit': scipy.constants.g
     }
 }
 
@@ -119,19 +134,18 @@ ORIGINAL_DATASET_SUB_DIRECTORY = 'original_datasets'
 PROCESSED_DATASET_SUB_DIRECTORY = 'processed_datasets'
 
 
-
 def get_parser():
     parser = argparse.ArgumentParser(
         description='SelfHAR datasets download and processing script')
     parser.add_argument('--working_directory', default='run',
                         help='the output directory of the downloads and processed datasets')
-    parser.add_argument('--mode', default='download_and_process', 
+    parser.add_argument('--mode', default='download_and_process',
                         choices=['download_and_process', 'download', 'process'],
                         help='the running mode of the script.\ndownload: download the dataset(s).\nprocess: process the donwloaded dataset(s)')
-    parser.add_argument('--dataset', default='all', 
-                        choices=['motionsense', 'hhar', 'all'], 
+    parser.add_argument('--dataset', default='all',
+                        choices=['motionsense', 'hhar', 'wisdm', 'all'],
                         help='name of the dataset to be downloaded/processed')
-    parser.add_argument('--dataset_file_path', default=None, 
+    parser.add_argument('--dataset_file_path', default=None,
                         help='the path to the downloaded dataset for processing. Default download path is used when None.')
     return parser
 
@@ -156,27 +170,34 @@ def download_dataset(data_directory, dataset_metadata):
         if not os.path.exists(os.path.join(data_directory, dataset_name)):
             os.mkdir(os.path.join(data_directory, dataset_name))
 
-        print("Donwloading ...")
+        print("Downloading ...")
         r = requests.get(dataset_url, allow_redirects=True)
         with open(os.path.join(data_directory, dataset_name, file_name), 'wb') as f:
             f.write(r.content)
-        print(f"Finshed donwloading to ({os.path.join(data_directory, dataset_name, file_name)})")
+        print(f"Finished downloading to ({os.path.join(data_directory, dataset_name, file_name)})")
     else:
         print("You did not agree to the terms.")
+
 
 def process_dataset(data_directory, processed_dataset_directory, dataset_metadata, dataset_file_path=None):
     dataset_name = dataset_metadata['name']
     file_name = dataset_metadata['file_name']
-    
 
     print("Unzipping dataset...")
     dataset_file_path = args.dataset_file_path
     if dataset_file_path is None:
         dataset_file_path = os.path.join(data_directory, dataset_name, file_name)
-    
-    with zipfile.ZipFile(dataset_file_path, 'r') as zip_ref:
-        zip_ref.extractall(os.path.join(data_directory, dataset_name))
-    
+
+    if file_name.endswith('.zip'):
+        with zipfile.ZipFile(dataset_file_path, 'r') as zip_ref:
+            zip_ref.extractall(os.path.join(data_directory, dataset_name))
+    elif file_name.endswith('.tar') or file_name.endswith('.tar.gz'):
+        with tarfile.open(dataset_file_path, 'r') as tar_ref:
+            tar_ref.extractall(os.path.join(data_directory, dataset_name))
+    else:
+        print(f"Unsupported file format: {file_name}")
+        return
+
     print("Processing dataset...")
     dataset_folder_path = os.path.join(data_directory, dataset_name, dataset_metadata['default_folder_path'])
     # print("PATH", dataset_folder_path)
@@ -184,6 +205,9 @@ def process_dataset(data_directory, processed_dataset_directory, dataset_metadat
         user_datasets = raw_data_processing.process_hhar_accelerometer_files(dataset_folder_path)
     elif dataset_name == 'motionsense':
         user_datasets = raw_data_processing.process_motion_sense_accelerometer_files(dataset_folder_path)
+    elif dataset_name == 'wisdm':
+        wisdm_file_path = os.path.join(dataset_folder_path, 'WISDM_ar_v1.1_raw.txt')
+        user_datasets = raw_data_processing.process_wisdm_accelerometer_files(wisdm_file_path)
     else:
         print(f"Dataset {dataset_name} is not supported.")
         return
@@ -192,8 +216,9 @@ def process_dataset(data_directory, processed_dataset_directory, dataset_metadat
     dataset_content['user_split'] = user_datasets
     with open(os.path.join(processed_dataset_directory, dataset_metadata['save_file_name']), 'wb') as f:
         pickle.dump(dataset_content, f)
-    print(f"Finshed Processing, saved to {os.path.join(processed_dataset_directory, dataset_metadata['save_file_name'])}.")
-    
+    print(
+        f"Finshed Processing, saved to {os.path.join(processed_dataset_directory, dataset_metadata['save_file_name'])}.")
+
 
 if __name__ == '__main__':
     parser = get_parser()
@@ -218,18 +243,15 @@ if __name__ == '__main__':
         for dataset in datasets:
             print(f"-------- Downloading {dataset} --------")
             download_dataset(dataset_directory, DATASET_METADATA[dataset])
-    
 
     if args.mode == 'download_and_process' or args.mode == 'process':
         if args.dataset == 'all':
-            datasets= list(DATASET_METADATA.keys())
+            datasets = list(DATASET_METADATA.keys())
         else:
             datasets = [args.dataset]
 
         for dataset in datasets:
             print(f"-------- Processing {dataset} --------")
-            process_dataset(dataset_directory, processed_dataset_directory, DATASET_METADATA[dataset], args.dataset_file_path)
+            process_dataset(dataset_directory, processed_dataset_directory, DATASET_METADATA[dataset],
+                            args.dataset_file_path)
     print("Finished")
-        
-        
-

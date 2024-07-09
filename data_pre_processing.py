@@ -49,206 +49,247 @@ You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
+
 def get_mode(np_array):
     """
     Get the mode (majority/most frequent value) from a 1D array
     """
-    return scipy.stats.mode(np_array)[0]
+    return scipy.stats.mode(np_array, axis=None)[0][0]
 
-def sliding_window_np(X, window_size, shift, stride, offset=0, flatten=None):
+
+def flatten_labels(label_windows):
+    """ Flatten the label windows by taking the mode of the activity labels and the most common sensor type. """
+    activity_labels = np.array([get_mode(window[:, 0]) for window in label_windows])
+    sensor_types = np.array([get_mode(window[:, 1]) for window in label_windows])
+    return np.stack((activity_labels, sensor_types), axis=1)
+
+
+def sliding_windows(data_dict, window_size, shift, stride, offset=0, flatten=None, specific_sensor_type=None):
     """
-    Create sliding windows from an ndarray
+    Create sliding windows from the user datasets with the new structure.
+
     Parameters:
-    
-        X (numpy-array)
-            The numpy array to be windowed
-        
-        shift (int)
-            number of timestamps to shift for each window
-            (200 here refers to 50% overlap, no overlap if =400)
-        stride (int)
-            stride of the window (dilation)
-        offset (int)
-            starting index of the first window
-        
-        flatten (function (array) -> (value or array) )
-            the function to be applied to a window after it is extracted
-            can be used with get_mode (see above) for extracting the label by majority voting
-            ignored if is None
-    Return:
-        Windowed ndarray
-            shape[0] is the number of windows
+        data_dict (dict): The dictionary containing user data in the new format.
+        window_size (int): The size of each window.
+        shift (int): Number of timestamps to shift for each window.
+        stride (int): Stride of the window (dilation).
+        offset (int): Starting index of the first window.
+        flatten (function (array) -> (value or array) ): The function to be applied to a window after it is extracted.
+            Can be used with get_mode for extracting the label by majority voting. Ignored if None.
+        specific_sensor_type (str): If specified, only windows from this sensor type will be created.
+
+    Returns:
+        windows (np.ndarray): Array of windowed data, where each element is a tuple (sensor_data_window, label_window).
     """
+    windows = []
 
     overall_window_size = (window_size - 1) * stride + 1
-    num_windows = (X.shape[0] - offset - (overall_window_size)) // shift + 1
-    windows = []
-    for i in range(num_windows):
-        start_index = i * shift + offset
-        this_window = X[start_index : start_index + overall_window_size : stride]
-        if flatten is not None:
-            this_window = flatten(this_window)
-        windows.append(this_window)
+
+    for user_id, data_segments in data_dict.items():
+        for sensor_data, activity_info in data_segments:
+            activity_labels = activity_info[:, 0]  # Extract the activity type
+            sensor_types = activity_info[:, 1]  # Extract the sensor type
+
+            if specific_sensor_type:
+                mask = sensor_types == specific_sensor_type
+                sensor_data = sensor_data[mask]
+                activity_labels = activity_labels[mask]
+                sensor_types = sensor_types[mask]
+
+            num_samples = sensor_data.shape[0]
+            num_windows = (num_samples - offset - (overall_window_size)) // shift + 1
+
+            for i in range(num_windows):
+                start_index = i * shift + offset
+                end_index = start_index + overall_window_size
+                this_window_data = sensor_data[start_index: end_index: stride]
+                this_window_labels = activity_labels[start_index: end_index: stride]
+                this_window_sensor_types = sensor_types[start_index: end_index: stride]
+
+                if flatten is not None:
+                    this_window_labels = np.stack((this_window_labels, this_window_sensor_types), axis=1)
+                    this_window_labels = flatten(this_window_labels)
+
+                windows.append((this_window_data, this_window_labels))
+
     return np.array(windows)
+
 
 def get_windows_dataset_from_user_list_format(user_datasets, window_size=400, shift=200, stride=1, verbose=0):
     """
-    Create windows dataset in 'user-list' format using sliding windows
+    Create windows dataset in 'user-list' format using sliding windows.
+
     Parameters:
-        user_datasets
-            dataset in the 'user-list' format {user_id: [(sensor_values, activity_labels)]}
-        
-        window_size = 400
-            size of the window (output)
-        shift = 200
-            number of timestamps to shift for each window
-            (200 here refers to 50% overlap, no overlap if =400)
-        stride = 1
-            stride of the window (dilation)
-        verbose = 0
-            debug messages are printed if > 0
-    
+        user_datasets: dataset in the 'user-list' format {user_id: [(sensor_values, activity_labels)]}
+        window_size (int): size of the window (output).
+        shift (int): number of timestamps to shift for each window (e.g., 200 for 50% overlap, 400 for no overlap).
+        stride (int): stride of the window (dilation).
+        verbose (int): debug messages are printed if > 0.
+
     Return:
-        user_dataset_windowed
-            Windowed version of the user_datasets
-            Windows from different trials are combined into one array
-            type: {user_id: ( windowed_sensor_values, windowed_activity_labels)}
-            windowed_sensor_values have shape (num_window, window_size, channels)
-            windowed_activity_labels have shape (num_window)
-            Labels are decided by majority vote
+        user_dataset_windowed: Windowed version of the user_datasets.
+            Windows from different trials are combined into one array.
+            type: {user_id: (windowed_sensor_values, windowed_activity_labels)}
+            windowed_sensor_values have shape (num_window, window_size, channels).
+            windowed_activity_labels have shape (num_window, 2).
     """
-    
     user_dataset_windowed = {}
 
     for user_id in user_datasets:
         if verbose > 0:
             print(f"Processing {user_id}")
-        x = []
-        y = []
+        x = []  # windowed sensor value
+        y = []  # windowed label
 
-        # Loop through each trail of each user
-        for v,l in user_datasets[user_id]:
-            v_windowed = sliding_window_np(v, window_size, shift, stride)
-            
-            # flatten the window by majority vote (1 value for each window)
-            l_flattened = sliding_window_np(l, window_size, shift, stride, flatten=get_mode)
+        # Loop through each trial of each user
+        for v, l in user_datasets[user_id]:
+            v_windowed, l_windowed = sliding_windows({user_id: [(v, l)]}, window_size, shift, stride)
+
+            # Flatten the window by taking the mode of the labels (activity and sensor type)
+            l_flattened = flatten_labels(l_windowed)
+
             if len(v_windowed) > 0:
                 x.append(v_windowed)
                 y.append(l_flattened)
             if verbose > 0:
                 print(f"Data: {v_windowed.shape}, Labels: {l_flattened.shape}")
 
-        # combine all trials
-        user_dataset_windowed[user_id] = (np.concatenate(x), np.concatenate(y).squeeze())
+        # Combine all trials
+        user_dataset_windowed[user_id] = (np.concatenate(x), np.concatenate(y))
     return user_dataset_windowed
+
 
 def combine_windowed_dataset(user_datasets_windowed, train_users, test_users=None, verbose=0):
     """
-    Combine a windowed 'user-list' dataset into training and test sets
+    Combine a windowed 'user-list' dataset into training and test sets.
+
     Parameters:
         user_dataset_windowed
-            dataset in the windowed 'user-list' format {user_id: ( windowed_sensor_values, windowed_activity_labels)}
-        
+            dataset in the windowed 'user-list' format {user_id: (windowed_sensor_values, windowed_activity_labels, windowed_sensor_types)}
         train_users
             list or set of users (corresponding to the user_id) to be used as training data
         test_users = None
             list or set of users (corresponding to the user_id) to be used as testing data
-            if is None, then all users not in train_users will be treated as test users 
+            if is None, then all users not in train_users will be treated as test users
         verbose = 0
             debug messages are printed if > 0
+
     Return:
         (train_x, train_y, test_x, test_y)
             train_x, train_y
-                the resulting training/test input values as a single numpy array
+                the resulting training input values, activity labels, and sensor types as a numpy array
             test_x, test_y
-                the resulting training/test labels as a single (1D) numpy array
+                the resulting testing input values, activity labels, and sensor types as a numpy array
     """
-    
+
     train_x = []
     train_y = []
     test_x = []
     test_y = []
+
     for user_id in user_datasets_windowed:
-        
-        v,l = user_datasets_windowed[user_id]
+        sensor_data, activity_labels, sensor_types = user_datasets_windowed[user_id]
+
         if user_id in train_users:
             if verbose > 0:
                 print(f"{user_id} Train")
-            train_x.append(v)
-            train_y.append(l)
+            train_x.append(sensor_data)
+            train_y.append((activity_labels, sensor_types))
         elif test_users is None or user_id in test_users:
             if verbose > 0:
                 print(f"{user_id} Test")
-            test_x.append(v)
-            test_y.append(l)
-    
+            test_x.append(sensor_data)
+            test_y.append((activity_labels, sensor_types))
 
     if len(train_x) == 0:
         train_x = np.array([])
         train_y = np.array([])
     else:
         train_x = np.concatenate(train_x)
-        train_y = np.concatenate(train_y).squeeze()
-    
+        train_y = np.concatenate(train_y)
+
     if len(test_x) == 0:
         test_x = np.array([])
         test_y = np.array([])
     else:
         test_x = np.concatenate(test_x)
-        test_y = np.concatenate(test_y).squeeze()
+        test_y = np.concatenate(test_y)
 
     return train_x, train_y, test_x, test_y
 
+
 def get_mean_std_from_user_list_format(user_datasets, train_users):
     """
-    Obtain and means and standard deviations from a 'user-list' dataset (channel-wise)
-    from training users only
+    Obtain means and standard deviations from a 'user-list' dataset (channel-wise)
+    from training users only.
+
     Parameters:
         user_datasets
-            dataset in the 'user-list' format {user_id: [(sensor_values, activity_labels)]}
-        
+            dataset in the 'user-list' format {user_id: [(sensor_values, activity_labels, sensor_types)]}
         train_users
             list or set of users (corresponding to the user_ids) from which the mean and std are extracted
+
     Return:
         (means, stds)
             means and stds of the particular users (channel-wise)
             shape: (num_channels)
     """
-    
-    mean_std_data = []
+    all_data = []
     for u in train_users:
-        for data, _ in user_datasets[u]:
-            mean_std_data.append(data)
-    mean_std_data_combined = np.concatenate(mean_std_data)
-    means = np.mean(mean_std_data_combined, axis=0)
-    stds = np.std(mean_std_data_combined, axis=0)
+        if u not in user_datasets:
+            print(f"User {u} not found in user_datasets")
+            continue
+        for data, _, _ in user_datasets[u]:  # Unpacking to get only sensor_values
+            all_data.append(data)
+    all_data = np.concatenate(all_data)
+    means = np.mean(all_data, axis=0)
+    stds = np.std(all_data, axis=0)
     return (means, stds)
+
 
 def normalise(data, mean, std):
     """
     Normalise data (Z-normalisation)
     """
 
-    return ((data - mean) / std)
+    return (data - mean) / std
+
+
+def normalise_data(data, feature_range=(0, 1)):
+    min_val = feature_range[0]
+    max_val = feature_range[1]
+    min_data = np.min(data, axis=0)
+    max_data = np.max(data, axis=0)
+
+    # Avoid division by zero by adding a small epsilon value to the denominator
+    scale = (max_data - min_data)
+    scale[scale == 0] = 1  # This prevents division by zero
+
+    scaled_data = (data - min_data) / scale
+    scaled_data = scaled_data * (max_val - min_val) + min_val
+    return scaled_data
+
 
 def apply_label_map(y, label_map):
     """
-    Apply a dictionary mapping to an array of labels
-    Can be used to convert str labels to int labels
+    Apply a dictionary mapping to an array of labels.
+    Can be used to convert str labels to int labels.
+
     Parameters:
         y
-            1D array of labels
+            2D array of labels where each entry is a list of labels [activity_label, sensor_type]
         label_map
             a label dictionary of (label_original -> label_new)
+
     Return:
         y_mapped
-            1D array of mapped labels
-            None values are present if there is no entry in the dictionary
+            2D array of mapped labels with the same shape as input
+            None values are present if there is no entry in the dictionary for either label
     """
-
     y_mapped = []
-    for l in y:
-        y_mapped.append(label_map.get(l))
+    for label_pair in y:
+        mapped_pair = [label_map.get(label, None) for label in label_pair]
+        y_mapped.append(mapped_pair)
     return np.array(y_mapped)
 
 
@@ -273,7 +314,9 @@ def filter_none_label(X, y):
     valid_mask = np.where(y != None)
     return (np.array(X[valid_mask]), np.array(y[valid_mask], dtype=int))
 
-def pre_process_dataset_composite(user_datasets, label_map, output_shape, train_users, test_users, window_size, shift, normalise_dataset=True, validation_split_proportion=0.2, verbose=0):
+
+def pre_process_dataset_composite(user_datasets, label_map, output_shape, train_users, test_users, window_size, shift,
+                                  normalise_dataset=True, validation_split_proportion=0.2, verbose=0):
     """
     A composite function to process a dataset
     Steps
@@ -292,7 +335,7 @@ def pre_process_dataset_composite(user_datasets, label_map, output_shape, train_
             can be used to filter labels
             (see apply_label_map and filter_none_label)
         output_shape
-            number of output classifiction categories
+            number of output classification categories
             used in one hot encoding of the labels
             (see tf.keras.utils.to_categorical)
         train_users
@@ -313,7 +356,7 @@ def pre_process_dataset_composite(user_datasets, label_map, output_shape, train_
             if is None, the training set will not be split - the return value np_val will also be none
         verbose = 0
             debug messages are printed if > 0
-    
+
     Return:
         (np_train, np_val, np_test)
             three pairs of (X, y)
@@ -323,23 +366,26 @@ def pre_process_dataset_composite(user_datasets, label_map, output_shape, train_
     """
 
     # Step 1
-    user_datasets_windowed = get_windows_dataset_from_user_list_format(user_datasets, window_size=window_size, shift=shift)
+    user_datasets_windowed = get_windows_dataset_from_user_list_format(user_datasets, window_size=window_size,
+                                                                       shift=shift)
 
     # Step 2
-    train_x, train_y, test_x, test_y = combine_windowed_dataset(user_datasets_windowed, train_users, test_users)
+    train_data, test_data = combine_windowed_dataset(user_datasets_windowed, train_users, test_users)
+
+    train_x = np.array([x[0] for x in train_data])
+    train_y = np.array([x[1] for x in train_data])
+    train_s = np.array([x[2] for x in train_data])
+
+    test_x = np.array([x[0] for x in test_data])
+    test_y = np.array([x[1] for x in test_data])
+    test_s = np.array([x[2] for x in test_data])
 
     # Step 3
-    if normalise_dataset:
-        means, stds = get_mean_std_from_user_list_format(user_datasets, train_users)
-        train_x = normalise(train_x, means, stds)
-        if len(test_users) > 0:
-            test_x = normalise(test_x, means, stds)
-        else:
-            test_x = np.empty((0,0))
+    #replaced Z normalisation
 
     # Step 4
-    train_y_mapped = apply_label_map(train_y, label_map)
-    test_y_mapped = apply_label_map(test_y, label_map)
+    train_y_mapped = np.stack([apply_label_map(train_y[:, 0], label_map), apply_label_map(train_y[:, 1], label_map)], axis=1)
+    test_y_mapped = np.stack([apply_label_map(test_y[:, 0], label_map), apply_label_map(test_y[:, 1], label_map)], axis=1)
 
     train_x, train_y_mapped = filter_none_label(train_x, train_y_mapped)
     test_x, test_y_mapped = filter_none_label(test_x, test_y_mapped)
@@ -367,13 +413,15 @@ def pre_process_dataset_composite(user_datasets, label_map, output_shape, train_
 
     # Step 6
     if validation_split_proportion is not None and validation_split_proportion > 0:
-        train_x_split, val_x_split, train_y_split, val_y_split = sklearn.model_selection.train_test_split(train_x, train_y_one_hot, test_size=validation_split_proportion, random_state=42)
+        train_x_split, val_x_split, train_y_split, val_y_split = sklearn.model_selection.train_test_split(train_x,
+                                                                                                          train_y_one_hot,
+                                                                                                          test_size=validation_split_proportion,
+                                                                                                          random_state=42)
     else:
         train_x_split = train_x
         train_y_split = train_y_one_hot
         val_x_split = None
         val_y_split = None
-        
 
     if verbose > 0:
         print("Training data shape:", train_x_split.shape)
@@ -384,13 +432,12 @@ def pre_process_dataset_composite(user_datasets, label_map, output_shape, train_
     np_val = (val_x_split, val_y_split) if val_x_split is not None else None
     np_test = (test_x, test_y_one_hot)
 
-    # original_np_train = np_train
-    # original_np_val = np_val
-    # original_np_test = np_test
-
     return (np_train, np_val, np_test)
 
-def pre_process_dataset_composite_in_user_format(user_datasets, label_map, output_shape, train_users, window_size, shift, normalise_dataset=True, verbose=0):
+
+
+def pre_process_dataset_composite_in_user_format(user_datasets, label_map, output_shape, train_users, window_size,
+                                                 shift, normalise_dataset=True, verbose=0):
     """
     A composite function to process a dataset which outputs processed datasets separately for each user (of type: {user_id: ( windowed_sensor_values, windowed_activity_labels)}).
     This is different from pre_process_dataset_composite where the data from the training and testing users are not combined into one object.
@@ -436,9 +483,9 @@ def pre_process_dataset_composite_in_user_format(user_datasets, label_map, outpu
         means, stds = get_mean_std_from_user_list_format(user_datasets, train_users)
 
     # Step 1
-    user_datasets_windowed = get_windows_dataset_from_user_list_format(user_datasets, window_size=window_size, shift=shift)
+    user_datasets_windowed = get_windows_dataset_from_user_list_format(user_datasets, window_size=window_size,
+                                                                       shift=shift)
 
-    
     user_datasets_processed = {}
     for user, user_dataset in user_datasets_windowed.items():
         data, labels = user_dataset
@@ -455,17 +502,18 @@ def pre_process_dataset_composite_in_user_format(user_datasets, label_map, outpu
         assert labels_one_hot[r].argmax() == labels_filtered[r]
 
         # Step 4
-        if normalise_dataset:
-            data_filtered = normalise(data_filtered, means, stds)
+        #removed z normalisation
 
         user_datasets_processed[user] = (data_filtered, labels_one_hot)
 
         if verbose > 0:
             print("Data shape of user", user, ":", data_filtered.shape)
-    
+
     return user_datasets_processed
 
-def add_user_id_to_windowed_dataset(user_datasets_windowed, encode_user_id=True, as_feature=False, as_label=True, verbose=0):
+
+def add_user_id_to_windowed_dataset(user_datasets_windowed, encode_user_id=True, as_feature=False, as_label=True,
+                                    verbose=0):
     """
     Add user ids as features or labels to a windowed dataset
     The user ids are appended to the last dimension of the arrays
@@ -528,7 +576,7 @@ def add_user_id_to_windowed_dataset(user_datasets_windowed, encode_user_id=True,
             data_modified = np.append(data, user_feature, axis=-1)
         else:
             data_modified = data
-        
+
         # Add user_id as an extra label
         if as_label:
             user_labels = np.expand_dims(np.full(labels.shape[:-1], user_id), axis=-1)
@@ -537,11 +585,13 @@ def add_user_id_to_windowed_dataset(user_datasets_windowed, encode_user_id=True,
             labels_modified = labels
 
         if verbose > 0:
-            print(f"User {user}: id {repr(user)} -> {repr(user_id)}, data shape {data.shape} -> {data_modified.shape}, labels shape {labels.shape} -> {labels_modified.shape}")
+            print(
+                f"User {user}: id {repr(user)} -> {repr(user_id)}, data shape {data.shape} -> {data_modified.shape}, labels shape {labels.shape} -> {labels_modified.shape}")
 
         user_datasets_modified[user] = (data_modified, labels_modified)
-    
+
     return user_datasets_modified, user_id_encoder
+
 
 def make_batches_reshape(data, batch_size):
     """
@@ -560,6 +610,7 @@ def make_batches_reshape(data, batch_size):
     max_len = (data.shape[0]) // batch_size * batch_size
     return data[:max_len].reshape((-1, batch_size, data.shape[-2], data.shape[-1]))
 
+
 def np_random_shuffle_index(length):
     """
     Get a list of randomly shuffled indices
@@ -568,11 +619,13 @@ def np_random_shuffle_index(length):
     np.random.shuffle(indices)
     return indices
 
+
 def ceiling_division(n, d):
     """
     Ceiling integer division
     """
     return -(n // -d)
+
 
 def get_batched_dataset_generator(data, batch_size):
     """
@@ -590,6 +643,6 @@ def get_batched_dataset_generator(data, batch_size):
 
     num_bathes = ceiling_division(data.shape[0], batch_size)
     for i in range(num_bathes):
-        yield data[i * batch_size : (i + 1) * batch_size]
+        yield data[i * batch_size: (i + 1) * batch_size]
 
     # return data[:max_len].reshape((-1, batch_size, data.shape[-2], data.shape[-1]))
