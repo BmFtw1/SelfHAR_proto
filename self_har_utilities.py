@@ -48,6 +48,7 @@ You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 """
 
+
 # def create_individual_transform_dataset(X, transform_funcs, other_labels=None, multiple=1, is_transform_func_vectorized=True, verbose=1):
 #     label_depth = len(transform_funcs)
 #     transform_x = []
@@ -115,6 +116,7 @@ def create_sensor_type_pseudo_labels(X, sensor_types):
     sensor_type_y = sensor_types
     return X, sensor_type_y
 
+
 def map_multitask_y(y, output_tasks):
     multitask_y = {}
     for i, task in enumerate(output_tasks):
@@ -128,7 +130,10 @@ def multitask_train_test_split(dataset, test_size=0.1, random_seed=42):
     np.random.seed(random_seed)
     np.random.shuffle(indices)
     test_dataset_size = int(dataset_size * test_size)
-    return dataset[0][indices[test_dataset_size:]], dict([(k, v[indices[test_dataset_size:]]) for k, v in dataset[1].items()]), dataset[0][indices[:test_dataset_size]], dict([(k, v[indices[:test_dataset_size]]) for k, v in dataset[1].items()])
+    return dataset[0][indices[test_dataset_size:]], dict(
+        [(k, v[indices[test_dataset_size:]]) for k, v in dataset[1].items()]), dataset[0][
+        indices[:test_dataset_size]], dict([(k, v[indices[:test_dataset_size]]) for k, v in dataset[1].items()])
+
 
 def evaluate_model_simple(pred, truth, is_one_hot=True, return_dict=True):
     """
@@ -175,19 +180,20 @@ def evaluate_model_simple(pred, truth, is_one_hot=True, return_dict=True):
 
     if return_dict:
         return {
-            'Confusion Matrix': test_cm, 
-            'F1 Macro': test_f1, 
-            'F1 Micro': test_f1_micro, 
-            'F1 Weighted': test_f1_weighted, 
-            'Precision': test_precision, 
-            'Recall': test_recall, 
+            'Confusion Matrix': test_cm,
+            'F1 Macro': test_f1,
+            'F1 Micro': test_f1_micro,
+            'F1 Weighted': test_f1_weighted,
+            'Precision': test_precision,
+            'Recall': test_recall,
             'Kappa': test_kappa
         }
     else:
         return (test_cm, test_f1, test_f1_micro, test_f1_weighted, test_precision, test_recall, test_kappa)
 
 
-def pick_top_samples_per_class_np(X, y_prob, num_samples_per_class=500, minimum_threshold=0, plurality_only=False, verbose=1):
+def pick_top_samples_per_class_np(X, y_prob, num_samples_per_class=500, minimum_threshold=0, plurality_only=False,
+                                  verbose=1):
     is_sample_selected_overall = np.full(len(X), False, dtype=bool)
     num_classes = y_prob.shape[-1]
 
@@ -211,19 +217,19 @@ def pick_top_samples_per_class_np(X, y_prob, num_samples_per_class=500, minimum_
                 print(f"No sample is above threshold {minimum_threshold}")
                 continue
         if current_selection_count > num_samples_per_class:
-            masked_y_prob = np.where(is_sample_selected_class, y_prob[:,c], 0)
+            masked_y_prob = np.where(is_sample_selected_class, y_prob[:, c], 0)
             selection_indices = np.argpartition(-masked_y_prob, num_samples_per_class)
 
             is_sample_selected_class[selection_indices[:num_samples_per_class]] = True
             is_sample_selected_class[selection_indices[num_samples_per_class:]] = False
             if verbose > 0:
-                print(f"Final selection for class: {np.sum(is_sample_selected_class)}, with minimum confidence : {y_prob[selection_indices[num_samples_per_class-1],c]}")
+                print(
+                    f"Final selection for class: {np.sum(is_sample_selected_class)}, with minimum confidence : {y_prob[selection_indices[num_samples_per_class - 1], c]}")
         else:
             if verbose > 0:
                 print(f"Final selection for class: {np.sum(is_sample_selected_class)}")
-        
+
         is_sample_selected_overall = is_sample_selected_class | is_sample_selected_overall
         if verbose > 0:
             print(f"Currnt total selection: {np.sum(is_sample_selected_overall)}")
     return X[is_sample_selected_overall], y_prob[is_sample_selected_overall]
-

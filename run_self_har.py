@@ -83,7 +83,7 @@ def get_parser():
                         help='')
 
     parser.add_argument('--labelled_dataset_paths', nargs='+',
-                        default=['run/processed_datasets/motionsense_processed.pkl'], type=str,
+                        default=['run/processed_datasets/wisdm_processed.pkl'], type=str,
                         help='names of the labelled datasets for training and fine-tuning')
     parser.add_argument('--unlabelled_dataset_path', default='run/processed_datasets/hhar_processed.pkl', type=str,
                         help='name of the unlabelled dataset to self-training and self-supervised training, ignored if only supervised training is performed.')
@@ -137,7 +137,7 @@ def prepare_dataset(dataset_paths, window_size, get_train_test_users, validation
         print(f'Testing users: {test_users}, Training users: {train_users}')
 
     np_train, np_val, np_test = data_pre_processing.pre_process_dataset_composite(
-        user_datasets=all_user_datasets,  # Use all_user_datasets here
+        user_datasets=all_user_datasets,
         label_map=label_map,
         output_shape=output_shape,
         train_users=train_users,
@@ -182,20 +182,17 @@ def load_unlabelled_dataset(prepared_datasets, unlabelled_dataset_path, window_s
 
     unlabelled_dataset_paths = [unlabelled_dataset_path]
 
-    prepared_datasets['unlabelled'] = \
-    prepare_dataset(unlabelled_dataset_paths, window_size, get_empty_test_users, validation_split_proportion=0,
-                    verbose=verbose)['train'][0]
+    prepared_datasets['unlabelled'] = prepare_dataset(unlabelled_dataset_paths, window_size, get_empty_test_users, validation_split_proportion=0,
+                                                      verbose=verbose)['train'][0]
     if max_unlabelled_windows is not None:
         prepared_datasets['unlabelled'] = prepared_datasets['unlabelled'][:max_unlabelled_windows]
+
+    sensor_types = prepared_datasets['unlabelled'][:, -1]  # Assuming sensor types are the last column
     prepared_datasets = {
         **prepared_datasets,
-        **generate_unlabelled_datasets_variations(
-            prepared_datasets['unlabelled'],
-            prepared_datasets['labelled']['train'][0],
-            labelled_repeat=labelled_repeat
-        )}
+        'sensor_type_pseudo_labels': self_har_utilities.create_sensor_type_pseudo_labels(prepared_datasets['unlabelled'], sensor_types)
+    }
     return prepared_datasets
-
 
 def get_config_default_value_if_none(experiment_config, entry, set_value=True):
     if entry in experiment_config:
@@ -503,35 +500,24 @@ if __name__ == '__main__':
                 if verbose > 0:
                     print(f"Loading previous model {previous_config['trained_model_path']}")
                 teacher_model = tf.keras.models.load_model(previous_config['trained_model_path'])
-            if verbose > 0:
-                print("Unlabelled Datasete Shape", prepared_datasets['unlabelled_combined'].shape)
+
             unlabelled_pred_prob = teacher_model.predict(prepared_datasets['unlabelled_combined'],
                                                          batch_size=batch_size)
-            np_self_labelled = self_har_utilities.pick_top_samples_per_class_np(
-                prepared_datasets['unlabelled_combined'],
-                unlabelled_pred_prob,
-                num_samples_per_class=get_config_default_value_if_none(experiment_config,
-                                                                       'self_training_samples_per_class'),
-                minimum_threshold=get_config_default_value_if_none(experiment_config,
-                                                                   'self_training_minimum_confidence'),
-                plurality_only=get_config_default_value_if_none(experiment_config, 'self_training_plurality_only')
-            )
 
-            multitask_X, multitask_transform_y, multitask_har_y = self_har_utilities.create_individual_transform_dataset(
-                np_self_labelled[0],
-                transform_funcs_vectorized,
-                other_labels=np_self_labelled[1]
+            # Use sensor type pseudo labels instead of transformations
+            np_self_labelled = prepared_datasets['sensor_type_pseudo_labels']
+
+            multitask_X, multitask_transform_y = self_har_utilities.create_sensor_type_pseudo_labels(
+                np_self_labelled[0], np_self_labelled[1]
             )
 
             core_model = self_har_models.create_1d_conv_core_model(input_shape)
-
 
             def training_rate_schedule(epoch):
                 rate = 0.0003 * (0.5 ** (epoch // 15))
                 if verbose > 0:
                     print(f"RATE: {rate}")
                 return rate
-
 
             training_schedule_callback = tf.keras.callbacks.LearningRateScheduler(training_rate_schedule)
 
@@ -550,15 +536,13 @@ if __name__ == '__main__':
                 student_pre_train_split_val = (pre_train_split[1], pre_train_split[3])
 
             else:
-
-                multitask_transform_y_mapped = self_har_utilities.map_multitask_y(multitask_transform_y,
-                                                                                  transform_funcs_names)
-                multitask_transform_y_mapped['har'] = multitask_har_y
+                # For self_har, use multitask learning setup with sensor types as the task
+                multitask_transform_y_mapped = {'sensor_type': multitask_transform_y}
                 self_har_train = (multitask_X, multitask_transform_y_mapped)
-                student_pre_train_dataset = self_har_train \
- \
+                student_pre_train_dataset = self_har_train
+
                 student_model = self_har_models.attach_multitask_transform_head(core_model,
-                                                                                output_tasks=transform_funcs_names,
+                                                                                output_tasks=['sensor_type'],
                                                                                 optimizer=optimizer, with_har_head=True,
                                                                                 har_output_shape=output_shape,
                                                                                 num_units_har=1024,
@@ -585,10 +569,7 @@ if __name__ == '__main__':
             )
 
             experiment_config['trained_model_path'] = best_student_pre_train_file_name
-            if experiment_type == 'self_training':
-                experiment_config['trained_model_type'] = 'har_model'
-            else:
-                experiment_config['trained_model_type'] = 'transform_with_har_model'
+            experiment_config['trained_model_type'] = 'har_model' if experiment_type == 'self_training' else 'transform_with_har_model'
 
         if get_config_default_value_if_none(experiment_config, 'eval_har', set_value=False):
             if get_config_default_value_if_none(experiment_config, 'trained_model_type') == 'har_model':
