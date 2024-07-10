@@ -83,7 +83,7 @@ def get_parser():
                         help='')
 
     parser.add_argument('--labelled_dataset_paths', nargs='+',
-                        default=['run/processed_datasets/wisdm_processed.pkl'], type=str,
+                        default=['run/processed_datasets/motionsense_processed.pkl'], type=str,
                         help='names of the labelled datasets for training and fine-tuning')
     parser.add_argument('--unlabelled_dataset_path', default='run/processed_datasets/hhar_processed.pkl', type=str,
                         help='name of the unlabelled dataset to self-training and self-supervised training, ignored if only supervised training is performed.')
